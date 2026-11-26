@@ -75,6 +75,15 @@ create policy "equipamentos_anon_delete"
   to anon, authenticated
   using (true);
 
+-- 5) Permissoes (GRANT) ----------------------------------------------------
+-- Sem estes GRANTs o PostgREST responde 401 "permission denied for table".
+-- Necessario para que o papel anonimo (chave publica) acesse a tabela.
+grant usage on schema public to anon, authenticated;
+
+grant select, insert, update, delete
+  on public.equipamentos
+  to anon, authenticated;
+
 -- ==========================================================================
 -- FIM
 -- ==========================================================================
