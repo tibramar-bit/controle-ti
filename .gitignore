@@ -1,0 +1,25 @@
+# ------------------------- Sistema operacional -------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------------------------- Editores / IDE ------------------------------
+.vscode/
+.idea/
+*.swp
+
+# ------------------------- Segredos / ambiente -------------------------
+# Mantenha credenciais sensiveis fora do repositorio.
+.env
+.env.*
+!.env.example
+
+# ------------------------- Dependencias --------------------------------
+node_modules/
+
+# ------------------------- Logs / temporarios --------------------------
+*.log
+*.tmp
+
+# ------------------------- Artefatos locais do Trae --------------------
+.trae-html-share-packages/
