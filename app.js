@@ -1,6 +1,6 @@
 /* ==========================================================================
    Controle T.I — lógica do aplicativo
-   Réplica funcional do modelo: patrimônio, estoque, relatórios e backup.
+   Réplica funcional do modelo: patrimônio, filiais, relatórios e backup.
    Persistência na nuvem via Supabase.
    ========================================================================== */
 
@@ -83,6 +83,7 @@
   const PADRAO = {
     nome: "",
     tipo: "Celular",
+    filial: "",
     status: "Em uso",
     condicao: "Novo",
     email: "",
@@ -184,28 +185,28 @@
     if (!estado.tipos.length) estado.tipos = TIPOS.slice();
   }
 
-  async function carregarOperacoes() {
+  async function carregarFiliais() {
     if (!clienteSupabase) return;
-    estado.carregandoOperacoes = true;
-    estado.erroOperacoes = false;
-    if (rotaAtual() === "/operacoes") render();
     const resposta = await clienteSupabase
-      .from("movimentacoes_estoque")
+      .from("filiais")
       .select("*")
-      .order("criado_em", { ascending: false });
-    estado.carregandoOperacoes = false;
-    if (resposta.error) {
-      estado.erroOperacoes = true;
-      throw resposta.error;
-    }
-    estado.operacoes = resposta.data || [];
-    estado.operacoesCarregadas = true;
+      .order("nome");
+    if (resposta.error) throw resposta.error;
+    estado.catalogoFiliais = resposta.data || [];
+    estado.filiais = estado.catalogoFiliais
+      .filter(function (filial) {
+        return filial.ativo;
+      })
+      .map(function (filial) {
+        return filial.nome;
+      });
   }
 
   function paraLinha(item) {
     return {
       nome: item.nome,
       tipo: item.tipo,
+      filial: item.filial,
       status: item.status,
       condicao: item.condicao,
       email: item.email,
@@ -223,12 +224,9 @@
     catalogoTipos: TIPOS.map(function (nome) {
       return { id: null, nome: nome, ativo: true };
     }),
-    operacoes: [],
-    operacoesCarregadas: false,
-    carregandoOperacoes: false,
-    erroOperacoes: false,
-    salvandoOperacao: false,
-    formularioOperacao: null,
+    filiais: [],
+    catalogoFiliais: [],
+    filial: "",
     carregando: true,
     busca: "",
     tipo: "",
@@ -268,7 +266,7 @@
   function rotaAtual() {
     const hash = location.hash.replace(/^#/, "");
     if (hash === "/relatorio") return "/relatorio";
-    if (hash === "/operacoes") return "/operacoes";
+    if (hash === "/filiais") return "/filiais";
     if (hash === "/entrar") return "/entrar";
     return "/";
   }
@@ -333,7 +331,7 @@
   function abas(rota) {
     const itens = [
       { caminho: "/", rotulo: "Equipamentos", simbolo: "boxes" },
-      { caminho: "/operacoes", rotulo: "Operações", simbolo: "warehouse" },
+      { caminho: "/filiais", rotulo: "Filiais", simbolo: "warehouse" },
       { caminho: "/relatorio", rotulo: "Relatório Excel", simbolo: "fileSpreadsheet" },
     ];
     return (
@@ -363,6 +361,7 @@
     const termo = estado.busca.trim().toLowerCase();
     return estado.equipamentos.filter(function (item) {
       if (estado.tipo && item.tipo !== estado.tipo) return false;
+      if (estado.filial && item.filial !== estado.filial) return false;
       if (estado.status && item.status !== estado.status) return false;
       if (estado.condicao && item.condicao !== estado.condicao) return false;
       if (!termo) return true;
@@ -385,7 +384,11 @@
 
   function temFiltro() {
     return Boolean(
-      estado.busca.trim() || estado.tipo || estado.status || estado.condicao
+      estado.busca.trim() ||
+        estado.tipo ||
+        estado.filial ||
+        estado.status ||
+        estado.condicao
     );
   }
 
@@ -501,6 +504,9 @@
       (meta ? '<div class="celula-meta">' + esc(meta) + "</div>" : "") +
       "</td>" +
       "<td>" +
+      (item.filial ? esc(item.filial) : '<span class="vazio">' + VAZIO + "</span>") +
+      "</td>" +
+      "<td>" +
       (item.email ? esc(item.email) : '<span class="vazio">' + VAZIO + "</span>") +
       "</td>" +
       "<td>" +
@@ -541,7 +547,7 @@
   function linhaVazia() {
     const comFiltro = temFiltro();
     return (
-      '<tr class="linha-vazia"><td colspan="8">' +
+      '<tr class="linha-vazia"><td colspan="9">' +
       '<div class="linha-vazia-icone">' +
       icone("package", 22) +
       "</div>" +
@@ -590,6 +596,12 @@
       icone("plus", 16) +
       " Gerenciar tipos</button>" +
       '<div class="campo">' +
+      '<label class="campo-rotulo" for="filtro-filial">Filial</label>' +
+      '<select class="selecao" id="filtro-filial" data-campo="filtro-filial">' +
+      opcoes(estado.filiais, estado.filial, "Todas as filiais") +
+      "</select>" +
+      "</div>" +
+      '<div class="campo">' +
       '<label class="campo-rotulo" for="filtro-status">Status</label>' +
       '<select class="selecao" id="filtro-status" data-campo="filtro-status">' +
       opcoes(STATUS, estado.status, "Todos os status") +
@@ -609,7 +621,7 @@
       '<div class="tabela-wrap">' +
       '<table class="tabela">' +
       "<thead><tr>" +
-      "<th>Equipamento</th><th>E-mail</th><th>Senha</th><th>Número</th>" +
+      "<th>Equipamento</th><th>Filial</th><th>E-mail</th><th>Senha</th><th>Número</th>" +
       '<th>IMEI/NS</th><th>Condição</th><th>Status</th><th class="th-acoes">Ações</th>' +
       "</tr></thead>" +
       '<tbody id="corpo"></tbody>' +
@@ -631,7 +643,7 @@
 
     if (estado.carregando) {
       corpo.innerHTML =
-        '<tr class="linha-vazia"><td colspan="8">Carregando equipamentos...</td></tr>';
+        '<tr class="linha-vazia"><td colspan="9">Carregando equipamentos...</td></tr>';
       if (sentinela) sentinela.classList.add("oculta");
       if (contador) contador.textContent = "";
       return;
@@ -725,129 +737,52 @@
     );
   }
 
-  function chaveMaterial(tipo, material) {
-    return (String(tipo) + "|" + String(material)).toLowerCase();
+  function linhaFilial(filial) {
+    return (
+      '<div class="linha-tipo"><span>' +
+      esc(filial.nome) +
+      (filial.ativo ? "" : ' <small class="texto-inativo">(retirada)</small>') +
+      '</span><button class="btn btn-secondary btn-sm" data-acao="alternar-filial" data-id="' +
+      esc(filial.id || "") +
+      '"' +
+      (!filial.id ? " disabled" : "") +
+      ">" +
+      (filial.ativo ? "Retirar" : "Restaurar") +
+      "</button></div>"
+    );
   }
 
-  function resumoEstoque() {
-    const mapa = {};
-    estado.operacoes.forEach(function (item) {
-      const chave = chaveMaterial(item.tipo, item.material);
-      if (!mapa[chave]) {
-        mapa[chave] = {
-          tipo: item.tipo,
-          material: item.material,
-          saldo: 0,
-        };
-      }
-      mapa[chave].saldo +=
-        item.operacao === "entrada" ? Number(item.quantidade) : -Number(item.quantidade);
-    });
-    return Object.keys(mapa)
-      .map(function (chave) {
-        return mapa[chave];
-      })
-      .filter(function (item) {
-        return item.saldo > 0;
-      })
-      .sort(function (a, b) {
-        return (a.tipo + a.material).localeCompare(b.tipo + b.material, "pt-BR");
-      });
-  }
-
-  function paginaOperacoes() {
-    const saldo = resumoEstoque();
-    const entradas = estado.operacoes
-      .filter(function (item) {
-        return item.operacao === "entrada";
-      })
-      .reduce(function (total, item) {
-        return total + Number(item.quantidade);
-      }, 0);
-    const saidas = estado.operacoes
-      .filter(function (item) {
-        return item.operacao === "saida";
-      })
-      .reduce(function (total, item) {
-        return total + Number(item.quantidade);
-      }, 0);
-    const linhas = estado.carregandoOperacoes
-      ? '<tr><td colspan="6" class="tabela-vazia">Carregando operações...</td></tr>'
-      : estado.erroOperacoes
-        ? '<tr><td colspan="6" class="tabela-vazia">Não foi possível carregar o histórico. Confira a migração do Supabase.</td></tr>'
-        : estado.operacoes.length
-      ? estado.operacoes
-          .map(function (item) {
-            const data = item.criado_em
-              ? new Date(item.criado_em).toLocaleString("pt-BR")
-              : VAZIO;
-            return (
-              "<tr><td>" +
-              esc(data) +
-              "</td><td>" +
-              esc(item.tipo) +
-              "</td><td>" +
-              esc(item.material) +
-              "</td><td>" +
-              badge(
-                item.operacao === "entrada" ? "Entrada" : "Saída",
-                item.operacao === "entrada" ? "badge-success" : "badge-warning"
-              ) +
-              "</td><td>" +
-              esc(item.quantidade) +
-              "</td><td>" +
-              esc(item.responsavel || VAZIO) +
-              "</td></tr>"
-            );
-          })
-          .join("")
-      : '<tr><td colspan="6" class="tabela-vazia">Nenhuma operação registrada ainda.</td></tr>';
-    const saldos = estado.carregandoOperacoes
-      ? '<tr><td colspan="3" class="tabela-vazia">Carregando saldo...</td></tr>'
-      : estado.erroOperacoes
-        ? '<tr><td colspan="3" class="tabela-vazia">Saldo indisponível até conectar a tabela do Supabase.</td></tr>'
-        : saldo.length
-      ? saldo
-          .map(function (item) {
-            return (
-              "<tr><td>" +
-              esc(item.tipo) +
-              "</td><td>" +
-              esc(item.material) +
-              "</td><td>" +
-              esc(item.saldo) +
-              "</td></tr>"
-            );
-          })
-          .join("")
-      : '<tr><td colspan="3" class="tabela-vazia">O estoque está vazio.</td></tr>';
+  function paginaFiliais() {
+    const ativas = estado.catalogoFiliais.filter(function (filial) {
+      return filial.ativo;
+    }).length;
+    const retiradas = estado.catalogoFiliais.length - ativas;
+    const linhas = estado.catalogoFiliais.map(linhaFilial).join("");
 
     return (
       '<div class="pagina">' +
-      '<div class="pagina-topo pagina-topo-acoes"><div><h1 class="pagina-titulo">Operações de estoque</h1>' +
-      '<p class="pagina-sub">Registre entradas e retiradas de materiais, como toners.</p></div>' +
-      '<button class="btn btn-primary" data-acao="abrir-operacao">' +
-      icone("plus", 16) +
-      " Registrar operação</button></div>" +
+      '<div class="pagina-topo"><div><h1 class="pagina-titulo">Filiais</h1>' +
+      '<p class="pagina-sub">Cadastre e retire filiais, como PetLove e Cargill, para escolher no cadastro dos equipamentos.</p></div></div>' +
       '<div class="kpis">' +
-      '<div class="kpi kpi-verde"><div><div class="kpi-valor">' +
-      esc(entradas) +
-      '</div><div class="kpi-rotulo">Unidades recebidas</div></div></div>' +
-      '<div class="kpi kpi-ambar"><div><div class="kpi-valor">' +
-      esc(saidas) +
-      '</div><div class="kpi-rotulo">Unidades retiradas</div></div></div>' +
       '<div class="kpi kpi-azul"><div><div class="kpi-valor">' +
-      esc(saldo.reduce(function (total, item) { return total + item.saldo; }, 0)) +
-      '</div><div class="kpi-rotulo">Unidades em estoque</div></div></div>' +
+      esc(ativas) +
+      '</div><div class="kpi-rotulo">Filiais ativas</div></div></div>' +
+      '<div class="kpi kpi-ambar"><div><div class="kpi-valor">' +
+      esc(retiradas) +
+      '</div><div class="kpi-rotulo">Filiais retiradas</div></div></div>' +
       "</div>" +
-      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Saldo atual por material</h2>' +
-      '<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Tipo</th><th>Material / modelo</th><th>Saldo</th></tr></thead><tbody>' +
-      saldos +
-      "</tbody></table></div></div></div>" +
-      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Histórico de operações</h2>' +
-      '<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Data</th><th>Tipo</th><th>Material / modelo</th><th>Operação</th><th>Quantidade</th><th>Responsável</th></tr></thead><tbody>' +
-      linhas +
-      "</tbody></table></div></div></div>" +
+      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Adicionar filial</h2>' +
+      '<div class="gerenciar-tipos-form">' +
+      '<input class="entrada" id="nova-filial" type="text" maxlength="80" placeholder="Ex.: PetLove" />' +
+      '<button class="btn btn-primary" data-acao="salvar-filial">' +
+      icone("plus", 16) +
+      " Incluir filial</button></div>" +
+      '<p class="backup-texto">Filiais retiradas deixam de aparecer nas opções; os equipamentos já cadastrados são preservados.</p>' +
+      "</div></div>" +
+      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Filiais cadastradas</h2>' +
+      '<div class="lista-tipos">' +
+      (linhas || '<p class="backup-texto">Nenhuma filial cadastrada.</p>') +
+      "</div></div></div>" +
       "</div>"
     );
   }
@@ -888,6 +823,13 @@
   }
 
   function campoSelecao(opcoes) {
+    const vazio = opcoes.vazio
+      ? '<option value=""' +
+        (opcoes.valor ? "" : " selected") +
+        ">" +
+        esc(opcoes.vazio) +
+        "</option>"
+      : "";
     return (
       '<div class="campo' +
       (opcoes.largo ? " campo-largo" : "") +
@@ -902,6 +844,7 @@
       '" data-campo-form="' +
       opcoes.nome +
       '">' +
+      vazio +
       opcoes.lista
         .map(function (valor) {
           return (
@@ -996,6 +939,16 @@
         rotulo: "Condição",
         valor: dados.condicao,
         lista: CONDICOES,
+      }) +
+      campoSelecao({
+        nome: "filial",
+        rotulo: "Filial",
+        valor: dados.filial,
+        vazio: "— Sem filial —",
+        lista:
+          dados.filial && !estado.filiais.includes(dados.filial)
+            ? estado.filiais.concat([dados.filial])
+            : estado.filiais,
       }) +
       campoTexto({
         nome: "email",
@@ -1092,6 +1045,7 @@
       badge(item.status, ROTULO_STATUS[item.status]) +
       "</div>" +
       '<div class="detalhe-grade">' +
+      linha("Filial", item.filial) +
       linha("Responsável", item.responsavel) +
       linha("E-mail", item.email) +
       linha("Senha", senhaBloco, true) +
@@ -1216,7 +1170,6 @@
     let html = "";
     if (m.tipo === "form") html = modalFormulario();
     else if (m.tipo === "tipos") html = modalTipos();
-    else if (m.tipo === "operacao") html = modalOperacao();
     else if (m.tipo === "detalhe") html = modalDetalhe(m.id);
     else if (m.tipo === "excluir") html = modalExcluir(m.id);
     else if (m.tipo === "backup") html = modalBackup();
@@ -1240,7 +1193,6 @@
       return;
     }
     if (modalAtual && modalAtual.tipo === "form") estado.formulario = null;
-    if (modalAtual && modalAtual.tipo === "operacao") estado.formularioOperacao = null;
     estado.modal = null;
     estado.senhaFormVisivel = false;
     estado.arquivoBackup = null;
@@ -1428,65 +1380,63 @@
     }
   }
 
-  function abrirModalOperacao() {
-    estado.formularioOperacao = {
-      operacao: "entrada",
-      tipo: estado.tipos[0] || TIPOS[0],
-      material: "",
-      quantidade: 1,
-      responsavel: "",
-      observacoes: "",
-    };
-    estado.modal = { tipo: "operacao" };
-    renderModal();
-  }
-
-  async function salvarOperacao() {
-    const f = estado.formularioOperacao || {};
-    if (estado.salvandoOperacao) return;
-    const quantidade = Number(f.quantidade);
-    if (!String(f.material || "").trim()) {
-      avisar("Informe o material ou modelo.", "danger");
-      return;
-    }
-    if (!Number.isInteger(quantidade) || quantidade < 1) {
-      avisar("Informe uma quantidade inteira maior que zero.", "danger");
+  async function salvarFilial() {
+    const entrada = document.getElementById("nova-filial");
+    const nome = entrada ? entrada.value.trim() : "";
+    if (!nome) {
+      avisar("Informe o nome da filial.", "danger");
       return;
     }
     if (!clienteSupabase) {
       semBanco();
       return;
     }
-    estado.salvandoOperacao = true;
-    renderModal();
+
+    const existente = estado.catalogoFiliais.find(function (filial) {
+      return filial.nome.toLocaleLowerCase("pt-BR") === nome.toLocaleLowerCase("pt-BR");
+    });
     try {
-      const resposta = await clienteSupabase.rpc("registrar_movimentacao_estoque", {
-        p_tipo: f.tipo,
-        p_material: String(f.material).trim(),
-        p_operacao: f.operacao,
-        p_quantidade: quantidade,
-        p_responsavel: String(f.responsavel || "").trim(),
-        p_observacoes: String(f.observacoes || "").trim(),
-      });
-      if (resposta.error) throw resposta.error;
-      estado.modal = null;
-      estado.formularioOperacao = null;
-      estado.salvandoOperacao = false;
-      render();
-      try {
-        await carregarOperacoes();
-        render();
-        avisar(f.operacao === "entrada" ? "Entrada registrada." : "Retirada registrada.");
-      } catch (erroAtualizacao) {
-        avisar("Operação registrada, mas o histórico não atualizou. Recarregue a tela.", "danger");
+      if (existente && existente.ativo) {
+        avisar("Essa filial já está cadastrada.", "danger");
+        return;
       }
+      if (existente && existente.id) {
+        const resposta = await clienteSupabase
+          .from("filiais")
+          .update({ ativo: true, nome: nome })
+          .eq("id", existente.id);
+        if (resposta.error) throw resposta.error;
+      } else {
+        const resposta = await clienteSupabase
+          .from("filiais")
+          .insert({ nome: nome, ativo: true });
+        if (resposta.error) throw resposta.error;
+      }
+      await carregarFiliais();
+      render();
+      avisar("Filial incluída.");
     } catch (erro) {
-      estado.salvandoOperacao = false;
-      renderModal();
-      avisar(
-        erro && erro.message ? erro.message : "Não foi possível registrar a operação.",
-        "danger"
-      );
+      avisar("Não foi possível incluir a filial. Confira se a migração do Supabase foi aplicada.", "danger");
+    }
+  }
+
+  async function alternarFilial(id) {
+    const filial = estado.catalogoFiliais.find(function (item) {
+      return String(item.id) === String(id);
+    });
+    if (!filial || !filial.id || !clienteSupabase) return;
+    try {
+      const resposta = await clienteSupabase
+        .from("filiais")
+        .update({ ativo: !filial.ativo })
+        .eq("id", filial.id);
+      if (resposta.error) throw resposta.error;
+      await carregarFiliais();
+      if (!estado.filiais.includes(estado.filial)) estado.filial = "";
+      render();
+      avisar(filial.ativo ? "Filial retirada das opções; cadastros antigos foram preservados." : "Filial restaurada.");
+    } catch (erro) {
+      avisar("Não foi possível atualizar a filial.", "danger");
     }
   }
 
@@ -1642,6 +1592,7 @@
     const colunas = [
       "Nome",
       "Tipo",
+      "Filial",
       "Condição",
       "Status",
       "Responsável",
@@ -1654,6 +1605,7 @@
       return [
         item.nome,
         item.tipo,
+        item.filial,
         item.condicao,
         item.status,
         item.responsavel,
@@ -1716,67 +1668,6 @@
     );
   }
 
-  function modalOperacao() {
-    const f = estado.formularioOperacao || {};
-    const tipos = estado.tipos.length ? estado.tipos : TIPOS;
-    return (
-      '<div class="sobreposicao"><section class="modal modal-lg">' +
-      '<div class="modal-cabecalho"><div><div class="modal-titulo">Registrar operação</div>' +
-      '<div class="modal-sub">Registre entrada ou retirada. O sistema impede retirar mais do que há em estoque.</div></div>' +
-      '<button class="btn-icone modal-fechar" data-acao="fechar-modal" title="Fechar">' +
-      icone("close", 18) +
-      "</button></div>" +
-      '<div class="modal-corpo"><div class="form-grade">' +
-      '<div class="campo"><label class="campo-rotulo" for="op-operacao">Operação</label>' +
-      '<select class="selecao" id="op-operacao" data-operacao-campo="operacao">' +
-      '<option value="entrada"' +
-      (f.operacao === "entrada" ? " selected" : "") +
-      ">Entrada</option><option value=\"saida\"" +
-      (f.operacao === "saida" ? " selected" : "") +
-      ">Retirada</option></select></div>" +
-      '<div class="campo"><label class="campo-rotulo" for="op-tipo">Tipo</label>' +
-      '<select class="selecao" id="op-tipo" data-operacao-campo="tipo">' +
-      tipos
-        .map(function (tipo) {
-          return (
-            '<option value="' +
-            esc(tipo) +
-            '"' +
-            (f.tipo === tipo ? " selected" : "") +
-            ">" +
-            esc(tipo) +
-            "</option>"
-          );
-        })
-        .join("") +
-      "</select></div>" +
-      '<div class="campo campo-largo"><label class="campo-rotulo" for="op-material">Material / modelo</label>' +
-      '<input class="entrada" id="op-material" data-operacao-campo="material" type="text" maxlength="120" placeholder="Ex.: Toner HP 105A" value="' +
-      esc(f.material || "") +
-      '" /></div>' +
-      '<div class="campo"><label class="campo-rotulo" for="op-quantidade">Quantidade</label>' +
-      '<input class="entrada" id="op-quantidade" data-operacao-campo="quantidade" type="number" min="1" step="1" value="' +
-      esc(f.quantidade || 1) +
-      '" /></div>' +
-      '<div class="campo"><label class="campo-rotulo" for="op-responsavel">Responsável</label>' +
-      '<input class="entrada" id="op-responsavel" data-operacao-campo="responsavel" type="text" maxlength="120" value="' +
-      esc(f.responsavel || "") +
-      '" /></div>' +
-      '<div class="campo campo-largo"><label class="campo-rotulo" for="op-observacoes">Observações</label>' +
-      '<textarea class="area-texto" id="op-observacoes" data-operacao-campo="observacoes" rows="3">' +
-      esc(f.observacoes || "") +
-      "</textarea></div>" +
-      "</div></div>" +
-      '<div class="modal-rodape"><button class="btn btn-secondary" data-acao="fechar-modal">Cancelar</button>' +
-      '<button class="btn btn-primary" data-acao="salvar-operacao"' +
-      (estado.salvandoOperacao ? " disabled" : "") +
-      ">" +
-      (estado.salvandoOperacao ? "Salvando..." : "Registrar operação") +
-      "</button></div>" +
-      "</section></div>"
-    );
-  }
-
   /* -------------------------------- render -------------------------------- */
 
   function render() {
@@ -1795,8 +1686,8 @@
       '<main class="conteudo" id="conteudo">' +
       (rota === "/relatorio"
         ? paginaRelatorio()
-        : rota === "/operacoes"
-          ? paginaOperacoes()
+        : rota === "/filiais"
+          ? paginaFiliais()
           : paginaEquipamentos()) +
       "</main>" +
       "</div>";
@@ -1847,10 +1738,10 @@
       salvarTipo();
     } else if (acao === "alternar-tipo") {
       alternarTipo(id);
-    } else if (acao === "abrir-operacao") {
-      abrirModalOperacao();
-    } else if (acao === "salvar-operacao") {
-      salvarOperacao();
+    } else if (acao === "salvar-filial") {
+      salvarFilial();
+    } else if (acao === "alternar-filial") {
+      alternarFilial(id);
     } else if (acao === "abrir-editar") {
       abrirModalFormulario(id);
     } else if (acao === "abrir-detalhe") {
@@ -1889,10 +1780,6 @@
 
   document.addEventListener("input", function (evento) {
     const campo = evento.target;
-    if (campo.dataset.operacaoCampo && estado.formularioOperacao) {
-      estado.formularioOperacao[campo.dataset.operacaoCampo] = campo.value;
-      return;
-    }
     if (campo.dataset.campoForm && estado.formulario) {
       estado.formulario.dados[campo.dataset.campoForm] = campo.value;
       return;
@@ -1913,11 +1800,6 @@
       return;
     }
 
-    if (campo.dataset.operacaoCampo && estado.formularioOperacao) {
-      estado.formularioOperacao[campo.dataset.operacaoCampo] = campo.value;
-      return;
-    }
-
     if (campo.dataset.campoForm && estado.formulario) {
       estado.formulario.dados[campo.dataset.campoForm] = campo.value;
       return;
@@ -1926,6 +1808,9 @@
     const chave = campo.dataset.campo;
     if (chave === "filtro-tipo") {
       estado.tipo = campo.value;
+      aplicarFiltro();
+    } else if (chave === "filtro-filial") {
+      estado.filial = campo.value;
       aplicarFiltro();
     } else if (chave === "filtro-status") {
       estado.status = campo.value;
@@ -1949,12 +1834,13 @@
   window.addEventListener("hashchange", function () {
     fecharModal();
     render();
-    if (rotaAtual() === "/operacoes" && !estado.operacoesCarregadas) {
-      carregarOperacoes().then(render).catch(function () {
-        estado.carregandoOperacoes = false;
-        avisar("Não foi possível carregar as operações. Aplique a migração do Supabase.", "danger");
-        render();
-      });
+    if (rotaAtual() === "/filiais" && !estado.filiais.length) {
+      carregarFiliais()
+        .then(render)
+        .catch(function () {
+          avisar("Não foi possível carregar as filiais. Aplique a migração do Supabase.", "danger");
+          render();
+        });
     }
   });
 
@@ -1977,6 +1863,11 @@
     } catch (erro) {
       avisar("Não foi possível carregar os tipos. Aplique a migração do Supabase.", "danger");
     }
+    try {
+      await carregarFiliais();
+    } catch (erro) {
+      avisar("Não foi possível carregar as filiais. Aplique a migração do Supabase.", "danger");
+    }
     estado.carregando = false;
     render();
   }
@@ -1993,11 +1884,5 @@
   render();
   if (rotaAtual() !== "/entrar") {
     carregarDados();
-    if (rotaAtual() === "/operacoes") {
-      carregarOperacoes().then(render).catch(function () {
-        estado.carregandoOperacoes = false;
-        avisar("Não foi possível carregar as operações. Aplique a migração do Supabase.", "danger");
-      });
-    }
   }
 })();
