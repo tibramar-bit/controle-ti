@@ -313,6 +313,70 @@ a {
   margin-bottom: 20px;
 }
 
+.pagina-topo-acoes {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.secao-titulo {
+  margin-bottom: 14px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.operacoes-card + .operacoes-card {
+  margin-top: 16px;
+}
+
+.tabela-vazia {
+  padding: 24px !important;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.gerenciar-tipos-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.lista-tipos {
+  max-height: 320px;
+  overflow-y: auto;
+  border-top: 1px solid var(--color-border);
+}
+
+.linha-tipo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 2px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.texto-inativo {
+  color: var(--color-text-secondary);
+}
+
+.campo-tipo-ajuda {
+  justify-content: flex-end;
+}
+
+@media (max-width: 600px) {
+  .pagina-topo-acoes {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .gerenciar-tipos-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .pagina-titulo {
   font-size: 22px;
   font-weight: 700;

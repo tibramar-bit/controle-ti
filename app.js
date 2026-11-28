@@ -1,7 +1,7 @@
 /* ==========================================================================
    Controle T.I — lógica do aplicativo
-   Réplica funcional do modelo: Equipamentos + Relatório Excel + Backup.
-   Persistência na nuvem via Supabase (tabela "equipamentos").
+   Réplica funcional do modelo: patrimônio, estoque, relatórios e backup.
+   Persistência na nuvem via Supabase.
    ========================================================================== */
 
 (function () {
@@ -136,7 +136,7 @@
       const valor = bruto ? bruto[campo] : undefined;
       if (valor !== undefined && valor !== null) item[campo] = String(valor);
     });
-    if (TIPOS.indexOf(item.tipo) === -1) item.tipo = PADRAO.tipo;
+    if (!item.tipo) item.tipo = PADRAO.tipo;
     if (STATUS.indexOf(item.status) === -1) item.status = PADRAO.status;
     if (CONDICOES.indexOf(item.condicao) === -1) item.condicao = PADRAO.condicao;
     return item;
@@ -166,6 +166,42 @@
     });
   }
 
+  async function carregarTipos() {
+    if (!clienteSupabase) return;
+    const resposta = await clienteSupabase
+      .from("tipos_equipamento")
+      .select("*")
+      .order("nome");
+    if (resposta.error) throw resposta.error;
+    estado.catalogoTipos = resposta.data || [];
+    estado.tipos = estado.catalogoTipos
+      .filter(function (tipo) {
+        return tipo.ativo;
+      })
+      .map(function (tipo) {
+        return tipo.nome;
+      });
+    if (!estado.tipos.length) estado.tipos = TIPOS.slice();
+  }
+
+  async function carregarOperacoes() {
+    if (!clienteSupabase) return;
+    estado.carregandoOperacoes = true;
+    estado.erroOperacoes = false;
+    if (rotaAtual() === "/operacoes") render();
+    const resposta = await clienteSupabase
+      .from("movimentacoes_estoque")
+      .select("*")
+      .order("criado_em", { ascending: false });
+    estado.carregandoOperacoes = false;
+    if (resposta.error) {
+      estado.erroOperacoes = true;
+      throw resposta.error;
+    }
+    estado.operacoes = resposta.data || [];
+    estado.operacoesCarregadas = true;
+  }
+
   function paraLinha(item) {
     return {
       nome: item.nome,
@@ -183,6 +219,16 @@
 
   const estado = {
     equipamentos: [],
+    tipos: TIPOS.slice(),
+    catalogoTipos: TIPOS.map(function (nome) {
+      return { id: null, nome: nome, ativo: true };
+    }),
+    operacoes: [],
+    operacoesCarregadas: false,
+    carregandoOperacoes: false,
+    erroOperacoes: false,
+    salvandoOperacao: false,
+    formularioOperacao: null,
     carregando: true,
     busca: "",
     tipo: "",
@@ -222,6 +268,7 @@
   function rotaAtual() {
     const hash = location.hash.replace(/^#/, "");
     if (hash === "/relatorio") return "/relatorio";
+    if (hash === "/operacoes") return "/operacoes";
     if (hash === "/entrar") return "/entrar";
     return "/";
   }
@@ -286,6 +333,7 @@
   function abas(rota) {
     const itens = [
       { caminho: "/", rotulo: "Equipamentos", simbolo: "boxes" },
+      { caminho: "/operacoes", rotulo: "Operações", simbolo: "warehouse" },
       { caminho: "/relatorio", rotulo: "Relatório Excel", simbolo: "fileSpreadsheet" },
     ];
     return (
@@ -535,9 +583,12 @@
       '<div class="campo">' +
       '<label class="campo-rotulo" for="filtro-tipo">Tipo</label>' +
       '<select class="selecao" id="filtro-tipo" data-campo="filtro-tipo">' +
-      opcoes(TIPOS, estado.tipo, "Todos os tipos") +
+      opcoes(estado.tipos, estado.tipo, "Todos os tipos") +
       "</select>" +
       "</div>" +
+      '<button class="btn btn-secondary" data-acao="abrir-tipos">' +
+      icone("plus", 16) +
+      " Gerenciar tipos</button>" +
       '<div class="campo">' +
       '<label class="campo-rotulo" for="filtro-status">Status</label>' +
       '<select class="selecao" id="filtro-status" data-campo="filtro-status">' +
@@ -646,7 +697,7 @@
       '<div class="campo">' +
       '<label class="campo-rotulo" for="r-tipo">Tipo</label>' +
       '<select class="selecao" id="r-tipo" data-campo="rel-tipo">' +
-      opcoes(TIPOS, estado.relTipo, "Todos os tipos") +
+      opcoes(estado.tipos, estado.relTipo, "Todos os tipos") +
       "</select>" +
       "</div>" +
       '<div class="campo">' +
@@ -670,6 +721,133 @@
       " As senhas nunca saem neste relatório.</p>" +
       "</div>" +
       "</div>" +
+      "</div>"
+    );
+  }
+
+  function chaveMaterial(tipo, material) {
+    return (String(tipo) + "|" + String(material)).toLowerCase();
+  }
+
+  function resumoEstoque() {
+    const mapa = {};
+    estado.operacoes.forEach(function (item) {
+      const chave = chaveMaterial(item.tipo, item.material);
+      if (!mapa[chave]) {
+        mapa[chave] = {
+          tipo: item.tipo,
+          material: item.material,
+          saldo: 0,
+        };
+      }
+      mapa[chave].saldo +=
+        item.operacao === "entrada" ? Number(item.quantidade) : -Number(item.quantidade);
+    });
+    return Object.keys(mapa)
+      .map(function (chave) {
+        return mapa[chave];
+      })
+      .filter(function (item) {
+        return item.saldo > 0;
+      })
+      .sort(function (a, b) {
+        return (a.tipo + a.material).localeCompare(b.tipo + b.material, "pt-BR");
+      });
+  }
+
+  function paginaOperacoes() {
+    const saldo = resumoEstoque();
+    const entradas = estado.operacoes
+      .filter(function (item) {
+        return item.operacao === "entrada";
+      })
+      .reduce(function (total, item) {
+        return total + Number(item.quantidade);
+      }, 0);
+    const saidas = estado.operacoes
+      .filter(function (item) {
+        return item.operacao === "saida";
+      })
+      .reduce(function (total, item) {
+        return total + Number(item.quantidade);
+      }, 0);
+    const linhas = estado.carregandoOperacoes
+      ? '<tr><td colspan="6" class="tabela-vazia">Carregando operações...</td></tr>'
+      : estado.erroOperacoes
+        ? '<tr><td colspan="6" class="tabela-vazia">Não foi possível carregar o histórico. Confira a migração do Supabase.</td></tr>'
+        : estado.operacoes.length
+      ? estado.operacoes
+          .map(function (item) {
+            const data = item.criado_em
+              ? new Date(item.criado_em).toLocaleString("pt-BR")
+              : VAZIO;
+            return (
+              "<tr><td>" +
+              esc(data) +
+              "</td><td>" +
+              esc(item.tipo) +
+              "</td><td>" +
+              esc(item.material) +
+              "</td><td>" +
+              badge(
+                item.operacao === "entrada" ? "Entrada" : "Saída",
+                item.operacao === "entrada" ? "badge-success" : "badge-warning"
+              ) +
+              "</td><td>" +
+              esc(item.quantidade) +
+              "</td><td>" +
+              esc(item.responsavel || VAZIO) +
+              "</td></tr>"
+            );
+          })
+          .join("")
+      : '<tr><td colspan="6" class="tabela-vazia">Nenhuma operação registrada ainda.</td></tr>';
+    const saldos = estado.carregandoOperacoes
+      ? '<tr><td colspan="3" class="tabela-vazia">Carregando saldo...</td></tr>'
+      : estado.erroOperacoes
+        ? '<tr><td colspan="3" class="tabela-vazia">Saldo indisponível até conectar a tabela do Supabase.</td></tr>'
+        : saldo.length
+      ? saldo
+          .map(function (item) {
+            return (
+              "<tr><td>" +
+              esc(item.tipo) +
+              "</td><td>" +
+              esc(item.material) +
+              "</td><td>" +
+              esc(item.saldo) +
+              "</td></tr>"
+            );
+          })
+          .join("")
+      : '<tr><td colspan="3" class="tabela-vazia">O estoque está vazio.</td></tr>';
+
+    return (
+      '<div class="pagina">' +
+      '<div class="pagina-topo pagina-topo-acoes"><div><h1 class="pagina-titulo">Operações de estoque</h1>' +
+      '<p class="pagina-sub">Registre entradas e retiradas de materiais, como toners.</p></div>' +
+      '<button class="btn btn-primary" data-acao="abrir-operacao">' +
+      icone("plus", 16) +
+      " Registrar operação</button></div>" +
+      '<div class="kpis">' +
+      '<div class="kpi kpi-verde"><div><div class="kpi-valor">' +
+      esc(entradas) +
+      '</div><div class="kpi-rotulo">Unidades recebidas</div></div></div>' +
+      '<div class="kpi kpi-ambar"><div><div class="kpi-valor">' +
+      esc(saidas) +
+      '</div><div class="kpi-rotulo">Unidades retiradas</div></div></div>' +
+      '<div class="kpi kpi-azul"><div><div class="kpi-valor">' +
+      esc(saldo.reduce(function (total, item) { return total + item.saldo; }, 0)) +
+      '</div><div class="kpi-rotulo">Unidades em estoque</div></div></div>' +
+      "</div>" +
+      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Saldo atual por material</h2>' +
+      '<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Tipo</th><th>Material / modelo</th><th>Saldo</th></tr></thead><tbody>' +
+      saldos +
+      "</tbody></table></div></div></div>" +
+      '<div class="card operacoes-card"><div class="card-corpo"><h2 class="secao-titulo">Histórico de operações</h2>' +
+      '<div class="tabela-wrap"><table class="tabela"><thead><tr><th>Data</th><th>Tipo</th><th>Material / modelo</th><th>Operação</th><th>Quantidade</th><th>Responsável</th></tr></thead><tbody>' +
+      linhas +
+      "</tbody></table></div></div></div>" +
       "</div>"
     );
   }
@@ -797,7 +975,16 @@
         largo: true,
         erro: erros.nome,
       }) +
-      campoSelecao({ nome: "tipo", rotulo: "Tipo", valor: dados.tipo, lista: TIPOS }) +
+      campoSelecao({
+        nome: "tipo",
+        rotulo: "Tipo",
+        valor: dados.tipo,
+        lista: estado.tipos.includes(dados.tipo)
+          ? estado.tipos
+          : estado.tipos.concat([dados.tipo]),
+      }) +
+      '<div class="campo campo-tipo-ajuda"><span class="campo-rotulo">&nbsp;</span>' +
+      '<button class="btn btn-secondary btn-sm" data-acao="abrir-tipos">+ Novo tipo</button></div>' +
       campoSelecao({
         nome: "status",
         rotulo: "Status",
@@ -1028,6 +1215,8 @@
     }
     let html = "";
     if (m.tipo === "form") html = modalFormulario();
+    else if (m.tipo === "tipos") html = modalTipos();
+    else if (m.tipo === "operacao") html = modalOperacao();
     else if (m.tipo === "detalhe") html = modalDetalhe(m.id);
     else if (m.tipo === "excluir") html = modalExcluir(m.id);
     else if (m.tipo === "backup") html = modalBackup();
@@ -1043,6 +1232,15 @@
   }
 
   function fecharModal() {
+    const modalAtual = estado.modal;
+    if (modalAtual && modalAtual.tipo === "tipos" && modalAtual.voltarParaFormulario) {
+      estado.modal = { tipo: "form" };
+      estado.senhaFormVisivel = false;
+      renderModal();
+      return;
+    }
+    if (modalAtual && modalAtual.tipo === "form") estado.formulario = null;
+    if (modalAtual && modalAtual.tipo === "operacao") estado.formularioOperacao = null;
     estado.modal = null;
     estado.senhaFormVisivel = false;
     estado.arquivoBackup = null;
@@ -1134,6 +1332,7 @@
     }
 
     estado.modal = null;
+    estado.formulario = null;
     estado.senhaFormVisivel = false;
     renderModal();
     render();
@@ -1161,6 +1360,134 @@
     renderModal();
     render();
     avisar("Equipamento excluído.");
+  }
+
+  async function salvarTipo() {
+    const entrada = document.getElementById("novo-tipo");
+    const nome = entrada ? entrada.value.trim() : "";
+    if (!nome) {
+      avisar("Informe o nome do tipo.", "danger");
+      return;
+    }
+    if (!clienteSupabase) {
+      semBanco();
+      return;
+    }
+
+    const existente = estado.catalogoTipos.find(function (tipo) {
+      return tipo.nome.toLocaleLowerCase("pt-BR") === nome.toLocaleLowerCase("pt-BR");
+    });
+    try {
+      if (existente && existente.ativo) {
+        avisar("Esse tipo já está cadastrado.", "danger");
+        return;
+      }
+      if (existente && existente.id) {
+        const resposta = await clienteSupabase
+          .from("tipos_equipamento")
+          .update({ ativo: true, nome: nome })
+          .eq("id", existente.id);
+        if (resposta.error) throw resposta.error;
+      } else {
+        const resposta = await clienteSupabase
+          .from("tipos_equipamento")
+          .insert({ nome: nome, ativo: true });
+        if (resposta.error) throw resposta.error;
+      }
+      await carregarTipos();
+      const voltar = estado.modal && estado.modal.voltarParaFormulario;
+      if (voltar && estado.formulario) {
+        estado.formulario.dados.tipo = nome;
+        estado.modal = { tipo: "form" };
+      }
+      renderModal();
+      avisar("Tipo incluído.");
+    } catch (erro) {
+      avisar("Não foi possível incluir o tipo. Confira se a migração do Supabase foi aplicada.", "danger");
+    }
+  }
+
+  async function alternarTipo(id) {
+    const tipo = estado.catalogoTipos.find(function (item) {
+      return String(item.id) === String(id);
+    });
+    if (!tipo || !tipo.id || !clienteSupabase) return;
+    try {
+      const resposta = await clienteSupabase
+        .from("tipos_equipamento")
+        .update({ ativo: !tipo.ativo })
+        .eq("id", tipo.id);
+      if (resposta.error) throw resposta.error;
+      await carregarTipos();
+      if (!estado.tipos.includes(estado.tipo)) estado.tipo = "";
+      renderModal();
+      aplicarFiltro();
+      avisar(tipo.ativo ? "Tipo retirado das opções; cadastros antigos foram preservados." : "Tipo restaurado.");
+    } catch (erro) {
+      avisar("Não foi possível atualizar o tipo.", "danger");
+    }
+  }
+
+  function abrirModalOperacao() {
+    estado.formularioOperacao = {
+      operacao: "entrada",
+      tipo: estado.tipos[0] || TIPOS[0],
+      material: "",
+      quantidade: 1,
+      responsavel: "",
+      observacoes: "",
+    };
+    estado.modal = { tipo: "operacao" };
+    renderModal();
+  }
+
+  async function salvarOperacao() {
+    const f = estado.formularioOperacao || {};
+    if (estado.salvandoOperacao) return;
+    const quantidade = Number(f.quantidade);
+    if (!String(f.material || "").trim()) {
+      avisar("Informe o material ou modelo.", "danger");
+      return;
+    }
+    if (!Number.isInteger(quantidade) || quantidade < 1) {
+      avisar("Informe uma quantidade inteira maior que zero.", "danger");
+      return;
+    }
+    if (!clienteSupabase) {
+      semBanco();
+      return;
+    }
+    estado.salvandoOperacao = true;
+    renderModal();
+    try {
+      const resposta = await clienteSupabase.rpc("registrar_movimentacao_estoque", {
+        p_tipo: f.tipo,
+        p_material: String(f.material).trim(),
+        p_operacao: f.operacao,
+        p_quantidade: quantidade,
+        p_responsavel: String(f.responsavel || "").trim(),
+        p_observacoes: String(f.observacoes || "").trim(),
+      });
+      if (resposta.error) throw resposta.error;
+      estado.modal = null;
+      estado.formularioOperacao = null;
+      estado.salvandoOperacao = false;
+      render();
+      try {
+        await carregarOperacoes();
+        render();
+        avisar(f.operacao === "entrada" ? "Entrada registrada." : "Retirada registrada.");
+      } catch (erroAtualizacao) {
+        avisar("Operação registrada, mas o histórico não atualizou. Recarregue a tela.", "danger");
+      }
+    } catch (erro) {
+      estado.salvandoOperacao = false;
+      renderModal();
+      avisar(
+        erro && erro.message ? erro.message : "Não foi possível registrar a operação.",
+        "danger"
+      );
+    }
   }
 
   function alternarSenha(id) {
@@ -1354,6 +1681,102 @@
     );
   }
 
+  function modalTipos() {
+    const linhas = estado.catalogoTipos
+      .map(function (tipo) {
+        return (
+          '<div class="linha-tipo"><span>' +
+          esc(tipo.nome) +
+          (tipo.ativo ? "" : ' <small class="texto-inativo">(retirado)</small>') +
+          '</span><button class="btn btn-secondary btn-sm" data-acao="alternar-tipo" data-id="' +
+          esc(tipo.id || "") +
+          '"' +
+          (!tipo.id ? " disabled" : "") +
+          ">" +
+          (tipo.ativo ? "Retirar" : "Restaurar") +
+          "</button></div>"
+        );
+      })
+      .join("");
+    return (
+      '<div class="sobreposicao"><section class="modal modal-lg">' +
+      '<div class="modal-cabecalho"><div><div class="modal-titulo">Gerenciar tipos</div>' +
+      '<div class="modal-sub">Tipos retirados deixam de aparecer nas opções; os registros existentes são preservados.</div></div>' +
+      '<button class="btn-icone modal-fechar" data-acao="fechar-modal" title="Fechar">' +
+      icone("close", 18) +
+      "</button></div>" +
+      '<div class="modal-corpo"><div class="gerenciar-tipos-form">' +
+      '<input class="entrada" id="novo-tipo" type="text" maxlength="80" placeholder="Ex.: Toner" />' +
+      '<button class="btn btn-primary" data-acao="salvar-tipo">' +
+      icone("plus", 16) +
+      " Incluir tipo</button></div>" +
+      '<div class="lista-tipos">' +
+      (linhas || '<p class="backup-texto">Nenhum tipo cadastrado.</p>') +
+      "</div></div></section></div>"
+    );
+  }
+
+  function modalOperacao() {
+    const f = estado.formularioOperacao || {};
+    const tipos = estado.tipos.length ? estado.tipos : TIPOS;
+    return (
+      '<div class="sobreposicao"><section class="modal modal-lg">' +
+      '<div class="modal-cabecalho"><div><div class="modal-titulo">Registrar operação</div>' +
+      '<div class="modal-sub">Registre entrada ou retirada. O sistema impede retirar mais do que há em estoque.</div></div>' +
+      '<button class="btn-icone modal-fechar" data-acao="fechar-modal" title="Fechar">' +
+      icone("close", 18) +
+      "</button></div>" +
+      '<div class="modal-corpo"><div class="form-grade">' +
+      '<div class="campo"><label class="campo-rotulo" for="op-operacao">Operação</label>' +
+      '<select class="selecao" id="op-operacao" data-operacao-campo="operacao">' +
+      '<option value="entrada"' +
+      (f.operacao === "entrada" ? " selected" : "") +
+      ">Entrada</option><option value=\"saida\"" +
+      (f.operacao === "saida" ? " selected" : "") +
+      ">Retirada</option></select></div>" +
+      '<div class="campo"><label class="campo-rotulo" for="op-tipo">Tipo</label>' +
+      '<select class="selecao" id="op-tipo" data-operacao-campo="tipo">' +
+      tipos
+        .map(function (tipo) {
+          return (
+            '<option value="' +
+            esc(tipo) +
+            '"' +
+            (f.tipo === tipo ? " selected" : "") +
+            ">" +
+            esc(tipo) +
+            "</option>"
+          );
+        })
+        .join("") +
+      "</select></div>" +
+      '<div class="campo campo-largo"><label class="campo-rotulo" for="op-material">Material / modelo</label>' +
+      '<input class="entrada" id="op-material" data-operacao-campo="material" type="text" maxlength="120" placeholder="Ex.: Toner HP 105A" value="' +
+      esc(f.material || "") +
+      '" /></div>' +
+      '<div class="campo"><label class="campo-rotulo" for="op-quantidade">Quantidade</label>' +
+      '<input class="entrada" id="op-quantidade" data-operacao-campo="quantidade" type="number" min="1" step="1" value="' +
+      esc(f.quantidade || 1) +
+      '" /></div>' +
+      '<div class="campo"><label class="campo-rotulo" for="op-responsavel">Responsável</label>' +
+      '<input class="entrada" id="op-responsavel" data-operacao-campo="responsavel" type="text" maxlength="120" value="' +
+      esc(f.responsavel || "") +
+      '" /></div>' +
+      '<div class="campo campo-largo"><label class="campo-rotulo" for="op-observacoes">Observações</label>' +
+      '<textarea class="area-texto" id="op-observacoes" data-operacao-campo="observacoes" rows="3">' +
+      esc(f.observacoes || "") +
+      "</textarea></div>" +
+      "</div></div>" +
+      '<div class="modal-rodape"><button class="btn btn-secondary" data-acao="fechar-modal">Cancelar</button>' +
+      '<button class="btn btn-primary" data-acao="salvar-operacao"' +
+      (estado.salvandoOperacao ? " disabled" : "") +
+      ">" +
+      (estado.salvandoOperacao ? "Salvando..." : "Registrar operação") +
+      "</button></div>" +
+      "</section></div>"
+    );
+  }
+
   /* -------------------------------- render -------------------------------- */
 
   function render() {
@@ -1370,7 +1793,11 @@
       cabecalho() +
       abas(rota) +
       '<main class="conteudo" id="conteudo">' +
-      (rota === "/relatorio" ? paginaRelatorio() : paginaEquipamentos()) +
+      (rota === "/relatorio"
+        ? paginaRelatorio()
+        : rota === "/operacoes"
+          ? paginaOperacoes()
+          : paginaEquipamentos()) +
       "</main>" +
       "</div>";
 
@@ -1405,6 +1832,25 @@
       carregarDados();
     } else if (acao === "abrir-novo") {
       abrirModalFormulario(null);
+    } else if (acao === "abrir-tipos") {
+      const voltarParaFormulario = Boolean(
+        estado.modal && estado.modal.tipo === "form"
+      );
+      estado.modal = {
+        tipo: "tipos",
+        voltarParaFormulario: voltarParaFormulario,
+      };
+      renderModal();
+      const entradaTipo = document.getElementById("novo-tipo");
+      if (entradaTipo) entradaTipo.focus();
+    } else if (acao === "salvar-tipo") {
+      salvarTipo();
+    } else if (acao === "alternar-tipo") {
+      alternarTipo(id);
+    } else if (acao === "abrir-operacao") {
+      abrirModalOperacao();
+    } else if (acao === "salvar-operacao") {
+      salvarOperacao();
     } else if (acao === "abrir-editar") {
       abrirModalFormulario(id);
     } else if (acao === "abrir-detalhe") {
@@ -1443,6 +1889,10 @@
 
   document.addEventListener("input", function (evento) {
     const campo = evento.target;
+    if (campo.dataset.operacaoCampo && estado.formularioOperacao) {
+      estado.formularioOperacao[campo.dataset.operacaoCampo] = campo.value;
+      return;
+    }
     if (campo.dataset.campoForm && estado.formulario) {
       estado.formulario.dados[campo.dataset.campoForm] = campo.value;
       return;
@@ -1460,6 +1910,11 @@
     if (campo.id === "arquivo-entrada") {
       estado.arquivoBackup = campo.files && campo.files[0] ? campo.files[0] : null;
       renderModal();
+      return;
+    }
+
+    if (campo.dataset.operacaoCampo && estado.formularioOperacao) {
+      estado.formularioOperacao[campo.dataset.operacaoCampo] = campo.value;
       return;
     }
 
@@ -1494,6 +1949,13 @@
   window.addEventListener("hashchange", function () {
     fecharModal();
     render();
+    if (rotaAtual() === "/operacoes" && !estado.operacoesCarregadas) {
+      carregarOperacoes().then(render).catch(function () {
+        estado.carregandoOperacoes = false;
+        avisar("Não foi possível carregar as operações. Aplique a migração do Supabase.", "danger");
+        render();
+      });
+    }
   });
 
   /* -------------------------------- partida -------------------------------- */
@@ -1510,6 +1972,11 @@
     } catch (erro) {
       avisar("Não foi possível carregar os equipamentos.", "danger");
     }
+    try {
+      await carregarTipos();
+    } catch (erro) {
+      avisar("Não foi possível carregar os tipos. Aplique a migração do Supabase.", "danger");
+    }
     estado.carregando = false;
     render();
   }
@@ -1524,5 +1991,13 @@
     location.hash = jaEntrou ? "#/" : "#/entrar";
   }
   render();
-  if (rotaAtual() !== "/entrar") carregarDados();
+  if (rotaAtual() !== "/entrar") {
+    carregarDados();
+    if (rotaAtual() === "/operacoes") {
+      carregarOperacoes().then(render).catch(function () {
+        estado.carregandoOperacoes = false;
+        avisar("Não foi possível carregar as operações. Aplique a migração do Supabase.", "danger");
+      });
+    }
+  }
 })();
